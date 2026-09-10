@@ -74,9 +74,6 @@ dependencies {
     implementation("androidx.media3:media3-ui-compose:$media3Version")
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
 
-    // build.gradle.kts
-    implementation("org.videolan.android:libvlc-all:4.0.0-eap29")
-
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
