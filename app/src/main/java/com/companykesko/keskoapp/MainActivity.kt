@@ -114,6 +114,7 @@ import com.companykesko.keskoapp.data.TvShowDetail
 import com.companykesko.keskoapp.ui.ChannelDetailState
 import com.companykesko.keskoapp.ui.ChannelDetailViewModel
 import com.companykesko.keskoapp.ui.MoviesViewModelFactory
+import com.companykesko.keskoapp.ui.PlayerScreen
 import com.companykesko.keskoapp.ui.TvShowDetailState
 import com.companykesko.keskoapp.ui.TvShowDetailViewModel
 import com.companykesko.keskoapp.ui.TvShowsViewModelFactory
@@ -121,9 +122,15 @@ import kotlinx.coroutines.launch
 
 // ===== Модель навигации по деталям =====
 
-enum class DetailType { MOVIE, TV, CHANNEL }
+enum class DetailType { MOVIE, TV, CHANNEL, PLAYER }
 
-data class DetailRoute(val type: DetailType, val id: Long)
+data class DetailRoute(
+    val type: DetailType,
+    val id: Long,
+    val streamUrl: String? = null,
+    val title: String? = null,
+    val subtitle: String? = null
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -215,8 +222,33 @@ fun MainContent(user: User) {
             )
             DetailType.CHANNEL -> ChannelDetailScreen(
                 channelId = route.id.toInt(),
-                onBack = { detailStack.removeAt(detailStack.lastIndex) }
+                onBack = { detailStack.removeAt(detailStack.lastIndex) },
+                onPlay = { url, title, subtitle ->
+                    detailStack.add(
+                        DetailRoute(
+                            type = DetailType.PLAYER,
+                            id = route.id,
+                            streamUrl = url,
+                            title = title,
+                            subtitle = subtitle
+                        )
+                    )
+                }
             )
+            DetailType.PLAYER -> {
+                val url = route.streamUrl
+                if (url.isNullOrBlank()) {
+                    // На всякий случай — если открыли без URL
+                    detailStack.removeAt(detailStack.lastIndex)
+                } else {
+                    PlayerScreen(
+                        streamUrl = url,
+                        title = route.title ?: "Плеер",
+                        subtitle = route.subtitle,
+                        onBack = { detailStack.removeAt(detailStack.lastIndex) }
+                    )
+                }
+            }
         }
         return
     }
@@ -408,6 +440,7 @@ private fun formatEpgTime(iso: String?): String {
 fun ChannelDetailScreen(
     channelId: Int,
     onBack: () -> Unit,
+    onPlay: (url: String, title: String, subtitle: String?) -> Unit,
     viewModel: ChannelDetailViewModel = viewModel(key = "channelDetail_$channelId")
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -449,7 +482,10 @@ fun ChannelDetailScreen(
                     }
                 }
                 is ChannelDetailState.Success -> {
-                    ChannelDetailContent(channel = s.channel)
+                    ChannelDetailContent(
+                        channel = s.channel,
+                        onPlay = onPlay
+                    )
                 }
             }
         }
@@ -457,7 +493,10 @@ fun ChannelDetailScreen(
 }
 
 @Composable
-private fun ChannelDetailContent(channel: ChannelDetail) {
+private fun ChannelDetailContent(
+    channel: ChannelDetail,
+    onPlay: (url: String, title: String, subtitle: String?) -> Unit
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -521,7 +560,15 @@ private fun ChannelDetailContent(channel: ChannelDetail) {
         // ===== Кнопка «Смотреть» =====
         item {
             Button(
-                onClick = { /* TODO: плеер */ },
+                onClick = {
+                    channel.link?.takeIf { it.isNotBlank() }?.let { link ->
+                        onPlay(
+                            link,
+                            channel.name ?: "Канал",
+                            "Канал № ${channel.number}" + (channel.genreTitle?.let { " · $it" } ?: "")
+                        )
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !channel.link.isNullOrBlank()
             ) {
