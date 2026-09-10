@@ -66,14 +66,16 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
-    val media3Version = "1.7.1"
+    val media3Version = "1.8.0"   // было 1.7.1
 
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
-    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
-    // Опционально — готовая Compose-обвязка (появилась с 1.6.0)
     implementation("androidx.media3:media3-ui-compose:$media3Version")
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
+
+    // build.gradle.kts
+    implementation("org.videolan.android:libvlc-all:4.0.0-eap29")
 
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
