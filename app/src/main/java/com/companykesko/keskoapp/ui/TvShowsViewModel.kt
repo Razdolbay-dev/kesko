@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.companykesko.keskoapp.data.ApiClient
 import com.companykesko.keskoapp.data.TvShow
+import com.companykesko.keskoapp.data.TvShowFilters
+import com.companykesko.keskoapp.data.TvShowSort
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,11 +25,19 @@ sealed interface TvShowsState {
 }
 
 class TvShowsViewModel(
-    private val genreId: Int? = null
+    private val fixedGenreId: Int? = null
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<TvShowsState>(TvShowsState.Idle)
     val state: StateFlow<TvShowsState> = _state.asStateFlow()
+
+    private val _filters = MutableStateFlow(
+        TvShowFilters(genreId = fixedGenreId, isPublished = 1)
+    )
+    val filters: StateFlow<TvShowFilters> = _filters.asStateFlow()
+
+    private val _sort = MutableStateFlow(TvShowSort.POPULARITY_DESC)
+    val sort: StateFlow<TvShowSort> = _sort.asStateFlow()
 
     private var currentPage = 1
     private val perPage = 25
@@ -56,43 +66,77 @@ class TvShowsViewModel(
         }
     }
 
-    private fun loadPage(reset: Boolean) {
+    fun updateFilters(newFilters: TvShowFilters) {
+        _filters.value = newFilters.copy(
+            genreId = fixedGenreId ?: newFilters.genreId,
+            isPublished = newFilters.isPublished ?: 1
+        )
+        reload()
+    }
+
+    fun updateSort(newSort: TvShowSort) {
+        _sort.value = newSort
+        reload()
+    }
+
+    fun resetFilters() {
+        _filters.value = TvShowFilters(genreId = fixedGenreId, isPublished = 1)
+        _sort.value = TvShowSort.POPULARITY_DESC
+        reload()
+    }
+
+    private fun reload() {
+        currentPage = 1
+        loadedShows.clear()
+        _state.value = TvShowsState.Loading
+        loadPage(reset = true, skipReset = true)
+    }
+
+    private fun loadPage(reset: Boolean, skipReset: Boolean = false) {
         if (isLoading) return
         isLoading = true
 
         viewModelScope.launch {
             try {
-                if (reset) {
+                if (reset && !skipReset) {
                     currentPage = 1
                     loadedShows.clear()
                     _state.value = TvShowsState.Loading
-                } else {
+                } else if (!reset) {
                     val cur = _state.value as? TvShowsState.Success
                     if (cur != null) {
-                        _state.value = cur.copy(
-                            isLoadingMore = true,
-                            errorWhileLoadingMore = null
-                        )
+                        _state.value = cur.copy(isLoadingMore = true, errorWhileLoadingMore = null)
                     }
                 }
+
+                val f = _filters.value
+                val s = _sort.value
 
                 val response = ApiClient.service.getTvShows(
                     page = currentPage,
                     perPage = perPage,
-                    genreId = genreId,
-                    isPublished = 1
+                    name = f.name,
+                    originalName = f.originalName,
+                    genreId = f.genreId,
+                    year = f.year,
+                    yearFrom = f.yearFrom,
+                    yearTo = f.yearTo,
+                    voteMin = f.voteMin,
+                    voteMax = f.voteMax,
+                    status = f.status,
+                    isPublished = f.isPublished,
+                    dataStatus = f.dataStatus,
+                    originalLanguage = f.originalLanguage,
+                    hasSeasons = f.hasSeasons,
+                    sort = s.apiValue
                 )
 
-                if (!response.success) {
-                    throw Exception(response.message ?: "Ошибка сервера")
-                }
+                if (!response.success) throw Exception(response.message ?: "Ошибка сервера")
 
                 loadedShows.addAll(response.data)
-
                 val pagination = response.pagination
                 totalPages = pagination?.totalPages ?: Int.MAX_VALUE
                 val hasMore = currentPage < totalPages
-
                 currentPage += 1
 
                 _state.value = TvShowsState.Success(
