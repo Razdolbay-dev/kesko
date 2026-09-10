@@ -106,6 +106,7 @@ import com.companykesko.keskoapp.ui.theme.KESKOAPPTheme
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CardDefaults
+import com.companykesko.keskoapp.data.ApiClient
 import com.companykesko.keskoapp.data.ChannelDetail
 import com.companykesko.keskoapp.data.EpgProgram
 import com.companykesko.keskoapp.data.Episode
@@ -114,11 +115,15 @@ import com.companykesko.keskoapp.data.TvShowDetail
 import com.companykesko.keskoapp.ui.ChannelDetailState
 import com.companykesko.keskoapp.ui.ChannelDetailViewModel
 import com.companykesko.keskoapp.ui.MoviesViewModelFactory
+import com.companykesko.keskoapp.ui.PlayerChannelItem
 import com.companykesko.keskoapp.ui.PlayerScreen
 import com.companykesko.keskoapp.ui.TvShowDetailState
 import com.companykesko.keskoapp.ui.TvShowDetailViewModel
 import com.companykesko.keskoapp.ui.TvShowsViewModelFactory
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.saveable.rememberSaveable
 
 // ===== Модель навигации по деталям =====
 
@@ -129,7 +134,10 @@ data class DetailRoute(
     val id: Long,
     val streamUrl: String? = null,
     val title: String? = null,
-    val subtitle: String? = null
+    val subtitle: String? = null,
+    val channelIndex: Int = -1,
+    val epgCurrentName: String? = null,
+    val epgNextName: String? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -181,10 +189,23 @@ fun MainScreen(viewModel: AuthViewModel = viewModel()) {
 fun MainContent(user: User) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-
+    val channelsViewModel: ChannelsViewModel = viewModel(key = "channels")
     // Универсальный стек детальных экранов. Пусто = показываем список
     val detailStack = remember { mutableStateListOf<DetailRoute>() }
+    // Стейты скролла для всех списков — живут на уровне MainContent
+    val channelsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val moviesListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val tvShowsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val cartoonsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val cartoonSerialsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    // В MainContent
+    val detailScrollStates = remember {
+        mutableStateMapOf<String, LazyListState>()
+    }
 
+    fun listStateFor(key: String): LazyListState {
+        return detailScrollStates.getOrPut(key) { LazyListState() }
+    }
     val menuItems = listOf(
         "ТВ" to Icons.Default.Tv,
         "Радио" to Icons.Default.Radio,
@@ -220,31 +241,198 @@ fun MainContent(user: User) {
                     detailStack.add(DetailRoute(DetailType.TV, newId))
                 }
             )
-            DetailType.CHANNEL -> ChannelDetailScreen(
-                channelId = route.id.toInt(),
-                onBack = { detailStack.removeAt(detailStack.lastIndex) },
-                onPlay = { url, title, subtitle ->
-                    detailStack.add(
-                        DetailRoute(
-                            type = DetailType.PLAYER,
-                            id = route.id,
-                            streamUrl = url,
-                            title = title,
-                            subtitle = subtitle
+            DetailType.CHANNEL -> {
+                // Находим индекс канала в общем списке
+                val channelsState = channelsViewModel.state.collectAsStateWithLifecycle().value
+                val channelsList = (channelsState as? ChannelsState.Success)?.channels ?: emptyList()
+                val channelIndex = channelsList.indexOfFirst { it.id == route.id.toInt() }
+
+                ChannelDetailScreen(
+                    channelId = route.id.toInt(),
+                    channelIndex = channelIndex,
+                    onBack = { detailStack.removeAt(detailStack.lastIndex) },
+                    onPlay = { url, title, subtitle, epgCurrent, epgNext ->
+                        detailStack.add(
+                            DetailRoute(
+                                type = DetailType.PLAYER,
+                                id = route.id,
+                                streamUrl = url,
+                                title = title,
+                                subtitle = subtitle,
+                                channelIndex = channelIndex,
+                                epgCurrentName = epgCurrent,
+                                epgNextName = epgNext
+                            )
                         )
-                    )
-                }
-            )
+                    }
+                )
+            }
             DetailType.PLAYER -> {
                 val url = route.streamUrl
                 if (url.isNullOrBlank()) {
-                    // На всякий случай — если открыли без URL
-                    detailStack.removeAt(detailStack.lastIndex)
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Поток недоступен")
+                            Spacer(Modifier.height(8.dp))
+                            Button(onClick = { detailStack.removeAt(detailStack.lastIndex) }) {
+                                Text("Назад")
+                            }
+                        }
+                    }
                 } else {
+                    val channelsState = channelsViewModel.state.collectAsStateWithLifecycle().value
+                    val channelsList = (channelsState as? ChannelsState.Success)?.channels ?: emptyList()
+
+                    // Готовим список для сайдбара
+                    val playerChannels = remember(channelsList) {
+                        channelsList.mapNotNull { ch ->
+                            ch.link?.takeIf { it.isNotBlank() }?.let { link ->
+                                PlayerChannelItem(
+                                    id = ch.id,
+                                    number = ch.number,
+                                    name = ch.name ?: "Канал ${ch.number}",
+                                    logo = ch.logo,
+                                    streamUrl = link
+                                )
+                            }
+                        }
+                    }
+
+                    val currentChannelId = route.id.toInt()
+
+                    // Колбэк выбора канала из сайдбара
+                    val selectChannel: (Int) -> Unit = { newChannelId ->
+                        val idx = playerChannels.indexOfFirst { it.id == newChannelId }
+                        if (idx >= 0) {
+                            val chosen = playerChannels[idx]
+                            detailStack[detailStack.lastIndex] = DetailRoute(
+                                type = DetailType.PLAYER,
+                                id = chosen.id.toLong(),
+                                streamUrl = chosen.streamUrl,
+                                title = chosen.name,
+                                subtitle = "Канал №${chosen.number}",
+                                channelIndex = idx,
+                                epgCurrentName = null,
+                                epgNextName = null
+                            )
+                            scope.launch {
+                                try {
+                                    val detail = ApiClient.service.getChannelDetail(chosen.id).channel
+                                    val current = detail?.epgCurrent?.name
+                                    val nextProg = detail?.epg?.firstOrNull { it.isFuture == true }?.name
+                                    val currentRoute = detailStack.lastOrNull()
+                                    if (currentRoute?.type == DetailType.PLAYER &&
+                                        currentRoute.id == chosen.id.toLong()
+                                    ) {
+                                        detailStack[detailStack.lastIndex] = currentRoute.copy(
+                                            epgCurrentName = current,
+                                            epgNextName = nextProg
+                                        )
+                                    }
+                                } catch (_: Exception) { }
+                            }
+                        }
+                    }
+
+                    val scope = rememberCoroutineScope()
+
+                    // Колбэк переключения на предыдущий канал
+                    val goPrev: (() -> Unit)? = if (route.channelIndex > 0 && channelsList.isNotEmpty()) {
+                        {
+                            val prevIndex = route.channelIndex - 1
+                            val prev = channelsList[prevIndex]
+                            detailStack[detailStack.lastIndex] = DetailRoute(
+                                type = DetailType.PLAYER,
+                                id = prev.id.toLong(),
+                                streamUrl = prev.link,
+                                title = prev.name ?: "Канал",
+                                subtitle = "Канал №${prev.number}",
+                                channelIndex = prevIndex,
+                                epgCurrentName = null,
+                                epgNextName = null
+                            )
+
+                            scope.launch {
+                                try {
+                                    val detail = ApiClient.service.getChannelDetail(prev.id).channel
+                                    val current = detail?.epgCurrent?.name
+                                    val nextProg = detail?.epg?.firstOrNull { it.isFuture == true }?.name
+
+                                    // Обновляем маршрут на последнем месте в стеке
+                                    val currentRoute = detailStack.lastOrNull()
+                                    if (currentRoute?.type == DetailType.PLAYER &&
+                                        currentRoute.id == prev.id.toLong()) {
+                                        detailStack[detailStack.lastIndex] = currentRoute.copy(
+                                            epgCurrentName = current,
+                                            epgNextName = nextProg
+                                        )
+                                    }
+                                } catch (_: Exception) {
+                                    // Игнорируем — плеер всё равно играет
+                                }
+                            }
+                        }
+                    } else null
+
+                    // Колбэк переключения на следующий канал
+                    val goNext: (() -> Unit)? = if (route.channelIndex >= 0 && route.channelIndex < channelsList.size - 1) {
+                        {
+                            val nextIndex = route.channelIndex + 1
+                            val next = channelsList[nextIndex]
+                            // Сразу переключаем плеер
+                            detailStack[detailStack.lastIndex] = DetailRoute(
+                                type = DetailType.PLAYER,
+                                id = next.id.toLong(),
+                                streamUrl = next.link,
+                                title = next.name ?: "Канал",
+                                subtitle = "Канал №${next.number}",
+                                channelIndex = nextIndex,
+                                epgCurrentName = null,
+                                epgNextName = null
+                            )
+
+                            scope.launch {
+                                try {
+                                    val detail = ApiClient.service.getChannelDetail(next.id).channel
+                                    val current = detail?.epgCurrent?.name
+                                    val nextProg = detail?.epg?.firstOrNull { it.isFuture == true }?.name
+
+                                    // Обновляем маршрут на последнем месте в стеке
+                                    val currentRoute = detailStack.lastOrNull()
+                                    if (currentRoute?.type == DetailType.PLAYER &&
+                                        currentRoute.id == next.id.toLong()) {
+                                        detailStack[detailStack.lastIndex] = currentRoute.copy(
+                                            epgCurrentName = current,
+                                            epgNextName = nextProg
+                                        )
+                                    }
+                                } catch (_: Exception) {
+                                    // Игнорируем — плеер всё равно играет
+                                }
+                            }
+                        }
+                    } else null
+
+                    // Кнопка «список каналов» — закрываем плеер
+                    val goBackToList: () -> Unit = {
+                        detailStack.removeAt(detailStack.lastIndex)
+                    }
+
                     PlayerScreen(
                         streamUrl = url,
                         title = route.title ?: "Плеер",
                         subtitle = route.subtitle,
+                        epgCurrent = route.epgCurrentName,
+                        epgNext = route.epgNextName,
+                        currentChannelId = currentChannelId,
+                        allChannels = playerChannels,
+                        onSelectChannel = selectChannel,
+                        onPrevChannel = goPrev,
+                        onNextChannel = goNext,
+                        onChannelListClick = null,
                         onBack = { detailStack.removeAt(detailStack.lastIndex) }
                     )
                 }
@@ -392,23 +580,29 @@ fun MainContent(user: User) {
                     0 -> ChannelsScreen(
                         onChannelClick = { channelId ->
                             detailStack.add(DetailRoute(DetailType.CHANNEL, channelId.toLong()))
-                        }
+                        },
+                        viewModel = channelsViewModel,
+                        listState = channelsListState       // ← новый параметр
                     )
-                    1 -> RadioScreen()                     // Радио
-                    2 -> CamerasScreen()                   // Камеры
+                    1 -> RadioScreen()
+                    2 -> CamerasScreen()
                     3 -> MoviesScreen(
-                        onMovieClick = { detailStack.add(DetailRoute(DetailType.MOVIE, it)) }
+                        onMovieClick = { detailStack.add(DetailRoute(DetailType.MOVIE, it)) },
+                        listState = moviesListState          // ← новый параметр
                     )
                     4 -> TvShowsScreen(
-                        onShowClick = { detailStack.add(DetailRoute(DetailType.TV, it)) }
+                        onShowClick = { detailStack.add(DetailRoute(DetailType.TV, it)) },
+                        listState = tvShowsListState
                     )
                     5 -> CartoonsScreen(
-                        onMovieClick = { detailStack.add(DetailRoute(DetailType.MOVIE, it)) }
+                        onMovieClick = { detailStack.add(DetailRoute(DetailType.MOVIE, it)) },
+                        listState = cartoonsListState
                     )
                     6 -> CartoonSerialsScreen(
-                        onShowClick = { detailStack.add(DetailRoute(DetailType.TV, it)) }
+                        onShowClick = { detailStack.add(DetailRoute(DetailType.TV, it)) },
+                        listState = cartoonSerialsListState
                     )
-                    7 -> ProfileScreen(user = user)        // Профиль
+                    7 -> ProfileScreen(user = user)
                     else -> Greeting(name = user.title ?: "Гость")
                 }
             }
@@ -439,13 +633,18 @@ private fun formatEpgTime(iso: String?): String {
 @Composable
 fun ChannelDetailScreen(
     channelId: Int,
+    channelIndex: Int,            // ← новый параметр
     onBack: () -> Unit,
-    onPlay: (url: String, title: String, subtitle: String?) -> Unit,
+    onPlay: (
+        url: String,
+        title: String,
+        subtitle: String?,
+        epgCurrent: String?,
+        epgNext: String?
+    ) -> Unit,                    // ← расширили колбэк
     viewModel: ChannelDetailViewModel = viewModel(key = "channelDetail_$channelId")
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-
-
 
     LaunchedEffect(channelId) {
         viewModel.load(channelId)
@@ -495,8 +694,22 @@ fun ChannelDetailScreen(
 @Composable
 private fun ChannelDetailContent(
     channel: ChannelDetail,
-    onPlay: (url: String, title: String, subtitle: String?) -> Unit
+    onPlay: (
+        url: String,
+        title: String,
+        subtitle: String?,
+        epgCurrent: String?,
+        epgNext: String?
+    ) -> Unit
 ) {
+    // Имя текущей передачи
+    val epgCurrentName = channel.epgCurrent?.name
+
+    // Имя следующей передачи (первая с is_future = true)
+    val epgNextName = channel.epg
+        .firstOrNull { it.isFuture == true }
+        ?.name
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -565,7 +778,10 @@ private fun ChannelDetailContent(
                         onPlay(
                             link,
                             channel.name ?: "Канал",
-                            "Канал № ${channel.number}" + (channel.genreTitle?.let { " · $it" } ?: "")
+                            "Канал №${channel.number}" +
+                                    (channel.genreTitle?.let { " · $it" } ?: ""),
+                            epgCurrentName,
+                            epgNextName
                         )
                     }
                 },
@@ -825,8 +1041,10 @@ private fun InfoRow(label: String, value: String) {
 @Composable
 fun ChannelsScreen(
     onChannelClick: (Int) -> Unit,
-    viewModel: ChannelsViewModel = viewModel(key = "channels")
+    viewModel: ChannelsViewModel = viewModel(key = "channels"),
+    listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 ) {
+
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
@@ -851,6 +1069,7 @@ fun ChannelsScreen(
 
         is ChannelsState.Success -> {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
@@ -908,7 +1127,8 @@ fun ChannelsScreen(
 @Composable
 fun MoviesScreen(
     onMovieClick: (Long) -> Unit,
-    viewModel: MoviesViewModel = viewModel(key = "movies")
+    viewModel: MoviesViewModel = viewModel(key = "movies"),
+    listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -940,6 +1160,7 @@ fun MoviesScreen(
 
         is MoviesState.Success -> {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
@@ -1072,7 +1293,8 @@ fun CartoonsScreen(
     viewModel: MoviesViewModel = viewModel(
         key = "cartoons",
         factory = MoviesViewModelFactory(genreId = 16)
-    )
+    ),
+    listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -1104,6 +1326,7 @@ fun CartoonsScreen(
 
         is MoviesState.Success -> {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
@@ -1140,7 +1363,8 @@ fun CartoonsScreen(
 @Composable
 fun TvShowsScreen(
     onShowClick: (Long) -> Unit,
-    viewModel: TvShowsViewModel = viewModel(key = "tvShows")
+    viewModel: TvShowsViewModel = viewModel(key = "tvShows"),
+    listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -1172,6 +1396,7 @@ fun TvShowsScreen(
 
         is TvShowsState.Success -> {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
@@ -1322,7 +1547,8 @@ fun CartoonSerialsScreen(
     viewModel: TvShowsViewModel = viewModel(
         key = "cartoonSerials",
         factory = TvShowsViewModelFactory(genreId = 16)
-    )
+    ),
+    listState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
@@ -1354,6 +1580,7 @@ fun CartoonSerialsScreen(
 
         is TvShowsState.Success -> {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
