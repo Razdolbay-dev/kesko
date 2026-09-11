@@ -77,7 +77,7 @@ class MoviesViewModel(
         // Прибиваем fixedGenreId и isPublished
         _filters.value = newFilters.copy(
             genreId = fixedGenreId ?: newFilters.genreId,
-            isPublished = newFilters.isPublished ?: 1
+            // isPublished = newFilters.isPublished ?: 1
         )
         reload()
     }
@@ -99,6 +99,11 @@ class MoviesViewModel(
         loadedMovies.clear()
         _state.value = MoviesState.Loading
         loadPage(reset = true, skipReset = true)
+    }
+
+    companion object {
+        private const val PUBLISHED_ONLY = 1
+        private const val PER_PAGE = 25
     }
 
     private fun loadPage(reset: Boolean, skipReset: Boolean = false) {
@@ -123,7 +128,7 @@ class MoviesViewModel(
 
                 val response = ApiClient.service.getMovies(
                     page = currentPage,
-                    perPage = perPage,
+                    perPage = PER_PAGE,
                     title = f.title,
                     originalTitle = f.originalTitle,
                     genreId = f.genreId,
@@ -132,7 +137,7 @@ class MoviesViewModel(
                     yearTo = f.yearTo,
                     voteMin = f.voteMin,
                     voteMax = f.voteMax,
-                    isPublished = f.isPublished,
+                    isPublished = PUBLISHED_ONLY,      // ← всегда 1
                     dataStatus = f.dataStatus,
                     originalLanguage = f.originalLanguage,
                     sort = s.apiValue
